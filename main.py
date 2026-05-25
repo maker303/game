@@ -1,5 +1,6 @@
 import pygame
 import sys
+import math
 
 # 1. 基础配置
 SCREEN_WIDTH = 800
@@ -13,6 +14,8 @@ COLOR_TILLED = (139, 69, 19)     # 耕地-棕色
 COLOR_ROCK = (128, 128, 128)     # 铁矿石-灰色
 COLOR_SEED = (144, 238, 144)     # 种子-淡绿色
 COLOR_RIPE = (255, 215, 0)       # 成熟作物-金色
+COLOR_BIN = (30, 144, 255)       # 【新】出货箱-道奇蓝
+COLOR_NPC = (148, 0, 211)        # 【新】商店NPC-深紫色
 COLOR_BG = (50, 50, 50)          # 背景暗灰
 COLOR_PLAYER = (255, 105, 180)   # 玩家小方块-粉色
 COLOR_TEXT = (255, 255, 255)     # 文字-白色
@@ -20,7 +23,7 @@ COLOR_TEXT = (255, 255, 255)     # 文字-白色
 # 2. 核心类设计
 class Crop:
     def __init__(self):
-        self.growth_time = 3  # 3天成熟
+        self.growth_time = 3  
         self.current_age = 0
         self.is_ripe = False
 
@@ -32,7 +35,7 @@ class Crop:
 
 class Tile:
     def __init__(self, tile_type="grass"):
-        self.type = tile_type  
+        self.type = tile_type  # grass, tilled, rock, bin, npc
         self.crop = None       
 
     def dig(self, unlocked_tools):
@@ -44,24 +47,30 @@ class Tile:
                 self.type = "grass"
                 return "iron_ore"
             else:
-                print("⛏️ 这个矿石太硬了！升级铁矿镐(按U)再来吧。")
+                print("⛏️ This rock is too hard! Press 'U' to upgrade your pickaxe first.")
         return None
 
-    def plant(self):
+    def plant(self, player_inventory):
+        """修改：播种时需要消耗背包里的种子"""
         if self.type == "tilled" and self.crop is None:
-            self.crop = Crop()
-            print("🌱 种下了芜菁种子！")
+            if player_inventory["seeds"] > 0:
+                player_inventory["seeds"] -= 1
+                self.crop = Crop()
+                print(f"🌱 Planted a Turnip seed! Seeds left: {player_inventory['seeds']}")
+            else:
+                print("❌ No seeds left! Go buy some from the NPC (Purple tile).")
 
 class Player:
     def __init__(self):
-        # 初始位置（像素坐标）
         self.x = 200
         self.y = 200
         self.speed = 4
-        self.size = 30  # 比格子略小，看起来更舒服
+        self.size = 30  
+
+    def get_center(self):
+        return self.x + self.size // 2, self.y + self.size // 2
 
     def move(self, keys):
-        """根据按键移动角色，并限制在屏幕内"""
         if keys[pygame.K_a] or keys[pygame.K_LEFT]:
             self.x -= self.speed
         if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
@@ -71,7 +80,6 @@ class Player:
         if keys[pygame.K_s] or keys[pygame.K_DOWN]:
             self.y += self.speed
 
-        # 边界碰撞限制
         self.x = max(0, min(self.x, SCREEN_WIDTH - self.size))
         self.y = max(0, min(self.y, SCREEN_HEIGHT - self.size))
 
@@ -84,43 +92,38 @@ class TimeManager:
         self.hour = 6
         self.minute = 30
         self.timer = 0.0
-        self.is_night_ended = False
 
-    def update(self, dt, game_map):
-        """根据帧率时间差(dt)更新游戏时间"""
-        if self.is_night_ended:
-            return
-
-        # 现实1秒钟 = 游戏内1.75分钟
-        # dt 是毫秒，所以除以 1000 换算成秒
+    def update(self, dt, game_map, player_inventory):
         self.timer += (dt / 1000.0) * 1.75
-        
         if self.timer >= 1.0:
             self.minute += int(self.timer)
             self.timer -= int(self.timer)
-
             if self.minute >= 60:
                 self.hour += self.minute // 60
                 self.minute = self.minute % 60
-
-            # 到了晚上 12:00 (24:00)，强制熬夜昏倒/睡觉
             if self.hour >= 24:
-                self.hour = 24
-                self.minute = 0
-                self.trigger_next_day(game_map)
+                self.trigger_next_day(game_map, player_inventory)
 
-    def trigger_next_day(self, game_map):
-        """进入下一天"""
+    def trigger_next_day(self, game_map, player_inventory):
+        """进入下一天，并结算出货箱金额"""
         self.day += 1
         self.hour = 6
         self.minute = 30
         self.timer = 0.0
-        # 让所有作物生长
+        
+        # 1. 结算出货箱（100% 价格：每个 20 金币）
+        if player_inventory["shipping_bin"] > 0:
+            earnings = player_inventory["shipping_bin"] * 20
+            player_inventory["gold"] += earnings
+            print(f"📦 Overnight Shipping Bin Income: +{earnings} Gold for {player_inventory['shipping_bin']} Turnips!")
+            player_inventory["shipping_bin"] = 0 # 清空出货箱
+        
+        # 2. 作物生长
         for row in game_map:
             for tile in row:
                 if tile.crop:
                     tile.crop.grow()
-        print(f"\n☀️ 新的一天！第 {self.day} 天开始。")
+        print(f"☀️ Good morning! Day {self.day} started.")
 
     def get_time_string(self):
         return f"Day {self.day}  {self.hour:02d}:{self.minute:02d}"
@@ -129,112 +132,177 @@ class TimeManager:
 def main():
     pygame.init()
     screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-    pygame.display.set_caption("PyFarm - Character & Time System")
+    pygame.display.set_caption("PyFarm - Economy System v0.5")
     clock = pygame.time.Clock()
     
-    # 初始化字体
-    font = pygame.font.SysFont("SimHei", 20) # 尽量使用支持中文的系统字体，若无则显示英文
+    font = pygame.font.Font(None, 24) 
 
-    # 游戏数据
     player = Player()
     time_manager = TimeManager()
-    player_inventory = {"gold": 100, "iron_ore": 0, "turnip": 0} # 砍掉了自动售出，变成存入 turnip
+    
+    # 增加：种子数量、出货箱暂存数量
+    player_inventory = {"gold": 100, "iron_ore": 0, "turnip": 0, "seeds": 3, "shipping_bin": 0} 
     unlocked_tools = {"iron_pickaxe": False}
 
-    # 初始化地图
+    # 初始化 12x12 地图
     game_map = [[Tile("grass") for _ in range(MAP_SIZE)] for _ in range(MAP_SIZE)]
+    
+    # 放置固定设施
+    game_map[0][0].type = "bin"  # 左上角放置【出货箱】(蓝色)
+    game_map[0][2].type = "npc"  # 旁边放置【商店NPC】(紫色)
+    
+    # 放置矿石
     game_map[2][3].type = "rock"
     game_map[5][6].type = "rock"
+    game_map[8][2].type = "rock"
 
-    # 主循环
+    print("Game Started with Economy System!")
+    print("Blue tile = Shipping Bin (100% value next day) | Purple tile = NPC Shop (60% value instant)")
+
     while True:
-        # 计算两帧之间的时间差（毫秒）
         dt = clock.tick(60) 
+        time_manager.update(dt, game_map, player_inventory)
 
-        # 处理时间流逝
-        time_manager.update(dt, game_map)
-
-        # 输入事件处理
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
 
-            # 鼠标点击（基于鼠标在网格的位置）
+            # 鼠标点击
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 mouse_x, mouse_y = pygame.mouse.get_pos()
                 tile_x = mouse_x // TILE_SIZE
                 tile_y = mouse_y // TILE_SIZE
 
                 if 0 <= tile_x < MAP_SIZE and 0 <= tile_y < MAP_SIZE:
+                    
+                    # 距离检测（最大 70 像素限制）
+                    tile_center_x = tile_x * TILE_SIZE + TILE_SIZE // 2
+                    tile_center_y = tile_y * TILE_SIZE + TILE_SIZE // 2
+                    player_center_x, player_center_y = player.get_center()
+                    distance = math.hypot(tile_center_x - player_center_x, tile_center_y - player_center_y)
+                    
+                    if distance > 70:
+                        print("❌ Too far away!")
+                        continue  
+
                     target_tile = game_map[tile_y][tile_x]
 
-                    # 左键：收割（入背包）/ 锄地 / 采矿
+                    # ─── 鼠标左键点击 ───
                     if event.button == 1:
-                        if target_tile.crop and target_tile.crop.is_ripe:
+                        # 情况 A: 点击了出货箱 (蓝色)
+                        if target_tile.type == "bin":
+                            if player_inventory["turnip"] > 0:
+                                count = player_inventory["turnip"]
+                                player_inventory["shipping_bin"] += count
+                                player_inventory["turnip"] = 0
+                                print(f"📦 Deposited {count} Turnips into the shipping bin. Will sell tonight!")
+                            else:
+                                print("📦 Shipping bin is empty. Collect harvested turnips first.")
+                        
+                        # 情况 B: 点击了商店 NPC (紫色) -> 卖出背包的所有物品 (获得 60% 价格 = 12 Gold/个)
+                        elif target_tile.type == "npc":
+                            if player_inventory["turnip"] > 0:
+                                count = player_inventory["turnip"]
+                                money_gained = count * 12  # 20 * 0.6 = 12
+                                player_inventory["gold"] += money_gained
+                                player_inventory["turnip"] = 0
+                                print(f"💰 Sold {count} Turnips to NPC instantly! Gained {money_gained} Gold.")
+                            else:
+                                print("🧙‍♂️ NPC: You don't have any Turnips to sell me!")
+
+                        # 情况 C: 点击了成熟作物 -> 收割
+                        elif target_tile.crop and target_tile.crop.is_ripe:
                             target_tile.crop = None
                             target_tile.type = "grass"
-                            player_inventory["turnip"] += 1  # 变为直接收入背包！
-                            print(f"🧺 成功收割芜菁！当前背包拥有: {player_inventory['turnip']} 个。")
+                            player_inventory["turnip"] += 1  
+                            print(f"🧺 Harvested a Turnip! Total: {player_inventory['turnip']}")
+                        
+                        # 情况 D: 普通锄地或采矿
                         else:
                             result = target_tile.dig(unlocked_tools)
                             if result == "iron_ore":
                                 player_inventory["iron_ore"] += 1
 
-                    # 右键：播种
+                    # ─── 鼠标右键点击 ───
                     elif event.button == 3:
-                        target_tile.plant()
+                        # 如果右键点击 NPC (紫色) -> 购买种子 (消耗 5金币，获得 1种子)
+                        if target_tile.type == "npc":
+                            if player_inventory["gold"] >= 5:
+                                player_inventory["gold"] -= 5
+                                player_inventory["seeds"] += 1
+                                print(f"🛒 Bought 1 Seed! Gained 1 Turnip seed (Total: {player_inventory['seeds']})")
+                            else:
+                                print("❌ NPC: You don't have enough gold! (Needs 5 Gold)")
+                        else:
+                            # 正常的播种
+                            target_tile.plant(player_inventory)
 
-            # 键盘单次按下事件
             elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_u: # 解锁铁矿镐
-                    if not unlocked_tools["iron_pickaxe"] and player_inventory["gold"] >= 50:
-                        player_inventory["gold"] -= 50
-                        unlocked_tools["iron_pickaxe"] = True
-                        print("🎉 解锁铁矿镐！")
+                if event.key == pygame.K_SPACE:
+                    time_manager.trigger_next_day(game_map, player_inventory)
+                elif event.key == pygame.K_u: 
+                    if not unlocked_tools["iron_pickaxe"]:
+                        if player_inventory["gold"] >= 50:
+                            player_inventory["gold"] -= 50
+                            unlocked_tools["iron_pickaxe"] = True
+                            print("🎉 Unlocked Iron Pickaxe!")
+                        else:
+                            print("❌ Need 50 Gold!")
 
-        # 实时键盘长按处理（控制角色移动）
         keys = pygame.key.get_pressed()
         player.move(keys)
 
-        # 4. 画面渲染
+        # 4. 渲染画面
         screen.fill(COLOR_BG)
 
-        # 绘制网格地图
         for y in range(MAP_SIZE):
             for x in range(MAP_SIZE):
                 tile = game_map[y][x]
                 if tile.type == "grass": color = COLOR_GRASS
                 elif tile.type == "tilled": color = COLOR_TILLED
                 elif tile.type == "rock": color = COLOR_ROCK
+                elif tile.type == "bin": color = COLOR_BIN
+                elif tile.type == "npc": color = COLOR_NPC
 
                 if tile.crop:
                     color = COLOR_RIPE if tile.crop.is_ripe else COLOR_SEED
 
                 pygame.draw.rect(screen, color, (x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE - 2, TILE_SIZE - 2))
 
-        # 绘制玩家
         player.draw(screen)
 
-        # 绘制右侧 UI 栏（背景和文字信息）
+        # 5. UI 面板渲染
         ui_left_margin = MAP_SIZE * TILE_SIZE + 20
-        
-        # 显示时间
         time_text = font.render(time_manager.get_time_string(), True, COLOR_TEXT)
         screen.blit(time_text, (ui_left_margin, 20))
         
-        # 显示背包状态
         gold_text = font.render(f"Gold: {player_inventory['gold']}", True, COLOR_TEXT)
+        seed_text = font.render(f"Seeds: {player_inventory['seeds']}", True, COLOR_TEXT)
+        turnip_text = font.render(f"Turnip (Inv): {player_inventory['turnip']}", True, COLOR_TEXT)
+        bin_text = font.render(f"In Bin: {player_inventory['shipping_bin']}", True, COLOR_TEXT)
         ore_text = font.render(f"Iron Ore: {player_inventory['iron_ore']}", True, COLOR_TEXT)
-        turnip_text = font.render(f"Turnip (Inventory): {player_inventory['turnip']}", True, COLOR_TEXT)
         
         screen.blit(gold_text, (ui_left_margin, 60))
-        screen.blit(ore_text, (ui_left_margin, 90))
+        screen.blit(seed_text, (ui_left_margin, 90))
         screen.blit(turnip_text, (ui_left_margin, 120))
+        screen.blit(bin_text, (ui_left_margin, 150))
+        screen.blit(ore_text, (ui_left_margin, 180))
         
-        # 补充操作提示
-        tip_text = font.render("[W/A/S/D]: Move", True, (200,200,200))
-        screen.blit(tip_text, (ui_left_margin, 200))
+        # 键位与玩法说明
+        tip_title = font.render("--- HOW TO PLAY ---", True, (255, 215, 0))
+        tip_move = font.render("[W/A/S/D] : Move Around", True, (200, 200, 200))
+        tip_bin = font.render("[Left Click Blue] : Put into Bin", True, (200, 200, 200))
+        tip_npc_buy = font.render("[Right Click Purple] : Buy Seed (5G)", True, (200, 200, 200))
+        tip_npc_sell = font.render("[Left Click Purple] : Quick Sell (12G)", True, (200, 200, 200))
+        tip_sleep = font.render("[SPACE] : Go to Sleep", True, (200, 200, 200))
+        
+        screen.blit(tip_title, (ui_left_margin, 240))
+        screen.blit(tip_move, (ui_left_margin, 270))
+        screen.blit(tip_bin, (ui_left_margin, 300))
+        screen.blit(tip_npc_buy, (ui_left_margin, 330))
+        screen.blit(tip_npc_sell, (ui_left_margin, 360))
+        screen.blit(tip_sleep, (ui_left_margin, 390))
 
         pygame.display.flip()
 
